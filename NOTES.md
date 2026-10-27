@@ -26,10 +26,15 @@ One Clef request per comment. The request passes the comment text, its author an
 
 ## Tools and models used
 
-- <!-- e.g. Claude (Opus) to read the task, write classify.py and this file -->
-- Cloudflare Workers AI — Clef (`clef-flash` for v1, `clef` for v2)
-- <!-- anything else you used -->
+- **Claude (Opus)**: to understand the task, write `classify.py`, set up the repository and push it to GitHub, and format my review notes into `MISTAKES.md` / `MISTAKES-v2.md`.
+- **Cloudflare Workers AI**: Clef, with `clef-flash` for `comments.json` and `clef` for `comments-v2.json`.
+- **Python 3** (installed from python.org), Terminal, TextEdit and GitHub.
+- The review of Clef's labels in both MISTAKES files was done by me.
 
 ## What I felt about doing this
 
-<!-- Write this yourself: a few honest lines. -->
+The task was pretty straightforward since Claude was there to help me. The judgement part was tricky because the comments were random and not part of a thread. In the actual work I would have context from classes and about the relationships between students, which would make it easier to decide whether comments, especially sarcastic ones, are harmful or just casual fun and banter, and banter can actually make the forum more useful for the cohort.
+
+Some of the spam comments were also tricky to judge, because some referral links can genuinely help students save money on subscriptions, while others can be phishing attempts. We probably need a system or guidelines on what kinds of links are acceptable.
+
+Overall, a good exercise!
