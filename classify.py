@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Classify forum comments as acceptable / toxic / spam with Cloudflare's Clef,
-then write report.html so a human can check Clef's work quickly.
+then write an HTML page so a human can check Clef's work quickly.
+
+Two runs, as the task asks:
+    v1: comments.json    with clef-flash -> results.json,    results.html
+    v2: comments-v2.json with clef       -> results-v2.json, results-v2.html
 
 Usage:
-    python3 classify.py                  # uses the larger `clef` model
-    python3 classify.py --model clef-flash
-    python3 classify.py --html-only      # rebuild report.html from results.json
-    python3 classify.py --input comments-v2.json
+    python3 classify.py                  # run v1 and v2
+    python3 classify.py --only v2        # run just one of them
+    python3 classify.py --html-only      # rebuild the HTML pages from saved results
 
 Standard library only. Credentials are read from cloud-flare.local.sh (never committed).
 """
@@ -22,22 +25,30 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-COMMENTS_FILE = HERE / "comments.json"
 CREDS_FILE = HERE / "cloud-flare.local.sh"
-RESULTS_FILE = HERE / "results.json"
-HTML_FILE = HERE / "report.html"
+
+RUNS = {
+    "v1": {"input": "comments.json", "model": "clef-flash",
+           "json": "results.json", "html": "results.html"},
+    "v2": {"input": "comments-v2.json", "model": "clef",
+           "json": "results-v2.json", "html": "results-v2.html"},
+}
 
 LABELS = ["acceptable", "toxic", "spam"]
 
 INSTRUCTIONS = (
     "`comment` was posted by `author` in the `thread` thread of a student discussion forum "
-    "for a college course on building things with AI tools such as Claude, Codex, ChatGPT "
-    "and Gemini. Moderators want to keep the forum useful and respectful. Decide whether "
+    "for `course`, a college course on using AI tools such as ChatGPT, Claude, Gemini and "
+    "Codex. The current assignment is `assignment`. Moderators want to keep the forum "
+    "useful and respectful. Decide whether "
     "the comment should stay up as it is (acceptable), be removed for being abusive "
     "(toxic), or be removed as unwanted promotion or junk (spam). Judge what the comment "
     "does, not its tone alone: students are often informal, frustrated, sarcastic or use "
     "Hinglish, and that is fine. Criticism of the course, the tools, the workload or the "
-    "teaching is acceptable, even when blunt."
+    "teaching is acceptable, even when blunt. Quoting or describing offensive, biased or "
+    "manipulative text in order to discuss it (for example prompts or chatbot replies "
+    "from testing an AI) is acceptable; so is obvious exaggeration about one's own "
+    "frustration that threatens no one."
 )
 
 CRITERIA = {
@@ -73,12 +84,13 @@ def load_credentials():
         sys.exit(f"{CREDS_FILE.name} is missing {missing}.")
 
 
-def classify_one(item, account, token, model, retries=5):
+def classify_one(item, context, account, token, model, retries=5):
     payload = {
         "state": {
             "comment": item["comment"],
             "author": item.get("author", ""),
             "thread": item.get("thread", ""),
+            **context,
         },
         "questions": {
             "moderation": {
@@ -121,24 +133,23 @@ def classify_one(item, account, token, model, retries=5):
     raise RuntimeError(f"Comment {item['id']}: gave up after {retries} attempts.")
 
 
-def classify_all(model, workers, comments_file=COMMENTS_FILE):
-    data = json.loads(Path(comments_file).read_text())
+def classify_all(comments_file, model, workers, account, token):
+    data = json.loads((HERE / comments_file).read_text())
     comments = data["comments"]
-    account, token = load_credentials()
+    context = {"course": data.get("course", ""), "assignment": data.get("forum", "")}
     results = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = [pool.submit(classify_one, c, account, token, model) for c in comments]
+        futures = [pool.submit(classify_one, c, context, account, token, model) for c in comments]
         for n, future in enumerate(futures, 1):
             results.append(future.result())
             print(f"\r{n}/{len(comments)} classified", end="", flush=True)
     print()
     out = {key: value for key, value in data.items() if key != "comments"}
     out.update({"model": model, "results": sorted(results, key=lambda r: r["id"])})
-    RESULTS_FILE.write_text(json.dumps(out, indent=2, ensure_ascii=False))
     return out
 
 
-def write_html(out):
+def write_html(out, html_path):
     results = out["results"]
     counts = {label: sum(r["label"] == label for r in results) for label in LABELS}
 
@@ -166,7 +177,7 @@ def write_html(out):
             f"</article>"
         )
 
-    title = "Clef moderation report"
+    title = f"Clef moderation: {html.escape(out.get('source', ''))}"
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -251,24 +262,31 @@ document.getElementById('q').oninput = apply;
 </script>
 </body></html>
 """
-    HTML_FILE.write_text(page, encoding="utf-8")
+    html_path.write_text(page, encoding="utf-8")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model", default="clef", choices=["clef", "clef-flash"])
+    parser.add_argument("--only", choices=list(RUNS), help="run just v1 or v2 (default: both)")
     parser.add_argument("--workers", type=int, default=4, help="parallel requests (default 4)")
-    parser.add_argument("--input", default=str(COMMENTS_FILE), help="comments file (default comments.json)")
-    parser.add_argument("--html-only", action="store_true", help="rebuild report.html from results.json")
+    parser.add_argument("--html-only", action="store_true", help="rebuild HTML from saved results JSON")
     args = parser.parse_args()
 
-    if args.html_only:
-        out = json.loads(RESULTS_FILE.read_text())
-    else:
-        out = classify_all(args.model, args.workers, args.input)
-    write_html(out)
-    counts = {l: sum(r["label"] == l for r in out["results"]) for l in LABELS}
-    print(f"Wrote {RESULTS_FILE.name} and {HTML_FILE.name}: {counts}")
+    names = [args.only] if args.only else list(RUNS)
+    creds = None if args.html_only else load_credentials()
+    for name in names:
+        run = RUNS[name]
+        json_path, html_path = HERE / run["json"], HERE / run["html"]
+        if args.html_only:
+            out = json.loads(json_path.read_text())
+        else:
+            print(f"{name}: {run['input']} with {run['model']}")
+            out = classify_all(run["input"], run["model"], args.workers, *creds)
+            out["source"] = run["input"]
+            json_path.write_text(json.dumps(out, indent=2, ensure_ascii=False))
+        write_html(out, html_path)
+        counts = {l: sum(r["label"] == l for r in out["results"]) for l in LABELS}
+        print(f"{name}: wrote {json_path.name} and {html_path.name}: {counts}")
 
 
 if __name__ == "__main__":
